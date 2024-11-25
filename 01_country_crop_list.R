@@ -8,7 +8,7 @@ if (host == "LAPTOP-ST129J47") {
 
 library(data.table)
 library(stringr)
-
+library(terra)
 
 # cropland nutrient database -----------
 # load complete database
@@ -26,13 +26,15 @@ regions <- dt[area_code >= 5000 | area == "China"]
 cc <- geodata::country_codes()
 setDT(cc)
 setnames(cc, names(cc), tolower(names(cc)))
+setnames(cc, c("unregion2", "unregion1"), c("continent", "region"))
+
 # fix fao names in geodata
 cc[name == "Micronesia", name_fao:= "Micronesia (Federated States of)"]
 cc[name == "Nauru", name_fao:= "Nauru"]
 cc[name == "Netherlands", name_fao:= "Netherlands (Kingdom of the)"]
 
 # join databases
-countries <- cc[, .(iso3, name_fao, unregion1, unregion2)][
+countries <- cc[, .(iso3, name_fao, region, continent)][
 	countries, on = .(name_fao = area)]
 
 # check completeness
@@ -102,36 +104,109 @@ d <- dcast(d, ... ~ element)
 d[, year:= as.integer(str_remove(year, "y"))]
 
 setnames(d, "name_fao", "country")
-setcolorder(d, c("iso3", "unregion1", "unregion2"), before = "crop_code")
+setcolorder(d, c("iso3", "region", "continent"), before = "crop_code")
 fwrite(d, "data/faostat/prod_&_area_all_crop_country_years.csv")
 
 # Rank crops ----------------
 # rank crops based on current (last 5 years) area
 dd <- d[year > 2017, .(area_ha = mean(area_ha, na.rm = TRUE)), by = key(d)]
-setcolorder(dd, c("iso3", "unregion1", "unregion2"), before = "crop_code")
+setcolorder(dd, c("iso3", "region", "continent"), before = "crop_code")
 dd[, area_code_m49:= NULL]
 dd[, cpc_code:= NULL]
-setcolorder(dd, c("unregion2", "unregion1", "country"))
+setcolorder(dd, c("continent", "region", "country"))
 setcolorder(dd, "crop", before = "crop_code")
 setcolorder(dd, "crop_group", before = "crop")
 dd[, crop_rank:= frankv(area_ha, order = -1, na.last = "keep", ties.method = "random"), 
 	 by = .(country)]
-setorder(dd, unregion2, unregion1, country, crop_rank, na.last = TRUE)
+setorder(dd, continent, region, country, crop_rank, na.last = TRUE)
 dd
 
 fwrite(dd, "data/faostat/current_area_all_crop_country_ranked.csv")
+dd[, crop_rank:= NULL]
 
-# Country classification ------------
-# decide whether a country is surveyed individually, by region, or extrapolated
-# country area totals
-dc <- dd[, .(area_ha = sum(area_ha, na.rm = TRUE))
-				 , by = .(unregion2, unregion1, country, area_code, iso3)
+
+# Survey units ------------
+# calculate country total cropland area
+dc <- dd[, .(cropland_Mha = sum(area_ha, na.rm = TRUE)/1e6)
+				 , by = .(continent, region, country, area_code, iso3)
 ]
-# countries that will be analyzed by region
-dc[unregion2 %in% c("Africa", "Eurpope"), area_unit:= "unregion1"]
+
+## by UN region ---------
+dc[continent %in% c("Africa", "Europe", "Oceania"), survey_unit:= region]
+dc[region %in% c("Western Asia", "Central Asia", "Central America"), survey_unit:= region]
+
+## by custom regions ----------
+dc[iso3 %in% c("USA", "CAN"), survey_unit:= "USA - Canada"]
+dc[iso3 %in% c("ARG", "BRA", "PRY", "URY"), survey_unit:= "Mercosur"]
+dc[region == "South America" & is.na(survey_unit), survey_unit:= "Andean counries"]
 
 
+## by country  ------------
+ind_ctry <- c(
+	"IND", "CHN", "MEX", "PHL", "IDN", "AUS" 
+)
+dc[iso3 %in% ind_ctry, survey_unit:= country]
 
-dc[unregion2 == "Oceania", .N, by = .(unregion1)]
+## by region minus important country -----------
+dc[is.na(survey_unit), survey_unit:= paste(region, "(others)")]
 
-dc[unregion2 %in% c("Africa", "Eurpope"), area_unit:= "unregion1"]
+## extrapolated ------------
+# leave blank
+dc[region %in% c("Caribbean", "Melanesia", "Polynesia", "Micronesia"), survey_unit:= NA]
+# north korea, guyana, suriname
+dc[iso3 %in% c("PRK", "GUY", "SUR"), survey_unit:= NA]
+# small country/islands/deserts with small crop area (less than 700k ha)
+dc[cropland_Mha < 0.7, survey_unit:= NA]
+
+dc[!is.na(survey_unit), uniqueN(survey_unit)]
+dc[, .N, by = .(survey_unit)]
+setorder(dc, continent, region, country)
+
+## save as excel ---------
+dt1 <- dc[, .(continent, region, country, survey_unit, iso3, `cropland (Mha)` = round(cropland_Mha, 1))]
+dt2 <- dc[!is.na(survey_unit), .(countries = paste(country, collapse = ", ")), by = .(survey_unit)]
+dir.create("data/excel_files", F, T)
+writexl::write_xlsx(
+	list(country_list = dt1, survey_unit_list = dt2), 
+	path = "data/excel_files/survey_unit.xlsx"
+)
+
+rm(dt1, dt2)
+
+# Crop per survey unit ------------------------
+dt <- dd[dc[!is.na(survey_unit)], on = .NATURAL]
+dtt <- dt[, .(cropland_ha = sum(area_ha, na.rm = T)), by = .(survey_unit)]
+dt <- dt[
+	, .(area_ha = sum(area_ha, na.rm = TRUE))
+	, by = .(survey_unit, crop_group, crop, crop_code)
+]
+dt <- dt[dtt, on = .(survey_unit)]
+setorderv(dt, c("survey_unit", "area_ha"), order = c(1,-1), na.last = TRUE)
+dt[, crop_prop:= area_ha/(cropland_ha)]
+dt[, crop_cum_prop:= cumsum(crop_prop), by = .(survey_unit)]
+dt[, max(crop_cum_prop), by = .(survey_unit)][, all.equal(V1, rep(1, .N))] |> 
+	stopifnot()
+dt[crop_cum_prop < 0.7,]
+
+dt1 <- dt[, head(.SD), by = .(survey_unit, crop_group)]
+
+
+# map --------------
+w <- geodata::world(path = "data")
+w0 <- merge(w, dc, by.x = "GID_0", by.y = "iso3")
+w1 <- aggregate(w0, "survey_unit")
+w1 <- w1[order(w1$continent)]
+
+set.seed(10)
+colors <- paletteer::paletteer_d("ggthemes::Tableau_20", 20) |>
+	c("red", "blue", "green", "yellow") |> sample()
+dir.create("maps", F)
+
+png("maps/survey_units.png", width = 7, height = 5, res = 300, units = "in")
+plot(w1, "survey_unit", lwd = 1.5, col = colors, legend = FALSE, mar = c(7,1,1,1), sort = FALSE)
+plot(w, add = T, lwd = 0.7)
+legend(x = "bottom", 
+			legend = c(w1$survey_unit[!is.na(w1$survey_unit)], "extrapolated"), 
+			 ncol = 4, fill = c(colors, "white"), xpd = NA, inset = -0.4, cex = 0.7)
+dev.off()
+

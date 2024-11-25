@@ -1,0 +1,12 @@
+library(terra)
+w <- geodata::world(path = "data")
+w0 <- merge(w, countries, by.x = "GID_0", by.y = "iso3")
+w1 <- aggregate(w0, "unregion1")
+w1 <- w1[order(w1$unregion2)]
+colors <- cartography::carto.pal("multi.pal", 11, "pastel.pal", 11)
+dir.create("maps", F)
+png("maps/unregion1.png", width = 7, height = 5, res = 300, units = "in")
+plot(w1, "unregion1", lwd = 1.5, col = colors, legend = FALSE, mar = c(7,1,1,1), sort = FALSE)
+plot(w, add = T, lwd = 0.7)
+legend(x = "bottom", w1$unregion1, ncol = 4, fill = colors, xpd = NA, inset = -0.3, cex = 0.7)
+dev.off()
