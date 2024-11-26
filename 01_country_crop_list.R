@@ -46,8 +46,28 @@ fn <- list.files("data/faostat/crop_groups", full.names = TRUE)
 lg <- lapply(fn, fread)
 names(lg) <- basename(fn) |> str_remove(".csv")
 dg <- rbindlist(lg, id = "crop_group")
+
+### combine Fibre and Oil crops ---------
+dg[crop_group %in% c("Fibre Crops", "Oilcrops"), crop_group:= "Fibre and Oil Crops"]
+
+# keep group, name and code only
 dg <- dg[, .(crop_group, crop = Item, cpc_code = `Item Code (CPC)`)] |>
 	unique()
+
+### Tee crops ---------------
+# let's define a tree crop category
+tree_crops <- c("Apples", "Apricots", "Avocados", "Cashewapple", "Cherries", "Dates", "Figs", 
+								"Grapes", "Kiwi fruit", "Lemons and limes", "Locust beans (carobs)", 
+								"Mangoes, guavas and mangosteens", "Olives", "Oranges", 
+								"Other citrus fruit, n.e.c.", "Other pome fruits", "Other stone fruits", 
+								"Other tropical fruits, n.e.c.", "Papayas", "Peaches and nectarines", 
+								"Pears", "Persimmons", "Plums and sloes", "Pomelos and grapefruits", 
+								"Quinces", "Sour cherries", "Tangerines, mandarins, clementines", 
+								"Coconuts, in shell", "Karite nuts (sheanuts)", "Oil palm fruit", 
+								"Tallowtree seeds", "Tung nuts")
+
+
+dg[crop_group == "Treenuts" | crop %in% tree_crops, crop_group:= "Tree Crops"]
 
 ## add old fao item code
 di <- fread(
@@ -78,15 +98,15 @@ setnames(d, names(d), str_replace(names(d), "item", "crop"))
 setnames(d, names(d), str_remove_all(names(d), "\\(|\\)"))
 setnames(d, "crop_code_cpc", "cpc_code")
 setnames(d, "area", "name_fao")
-# subset crop variables
+# select crop variables (rm livestock variables)
 d <- d[element %in% c("Area harvested", "Production", "Yield")]
-# subset crops
+# select crops (rm livestock rows)
 d <- d[dg, on = .NATURAL]
 # are all crops present?
 all(d$crop %in% dg$crop) |> stopifnot()
-# subset countries
+# subset countries (to keep the ones in the cropland nutrient database)
 d <- d[countries, on = .NATURAL]
-# are all countries present
+# are all countries present?
 all(d$name_fao %in% countries$name_fao) |> stopifnot()
 
 # reshape to long
@@ -102,34 +122,37 @@ d[, element_code:= NULL]
 # reshape to wide (area, yield, and prod in diff columns)
 d <- dcast(d, ... ~ element)
 d[, year:= as.integer(str_remove(year, "y"))]
-
+# save data
 setnames(d, "name_fao", "country")
 setcolorder(d, c("iso3", "region", "continent"), before = "crop_code")
 fwrite(d, "data/faostat/prod_&_area_all_crop_country_years.csv")
 
-# Rank crops ----------------
-# rank crops based on current (last 5 years) area
+# Current yield/area ----------------
+#  last 5 years average
 dd <- d[year > 2017, .(area_ha = mean(area_ha, na.rm = TRUE)), by = key(d)]
 setcolorder(dd, c("iso3", "region", "continent"), before = "crop_code")
+# remove unnecessary columns
 dd[, area_code_m49:= NULL]
 dd[, cpc_code:= NULL]
 setcolorder(dd, c("continent", "region", "country"))
 setcolorder(dd, "crop", before = "crop_code")
 setcolorder(dd, "crop_group", before = "crop")
+# add crop rank
 dd[, crop_rank:= frankv(area_ha, order = -1, na.last = "keep", ties.method = "random"), 
 	 by = .(country)]
 setorder(dd, continent, region, country, crop_rank, na.last = TRUE)
 dd
-
+# save data
 fwrite(dd, "data/faostat/current_area_all_crop_country_ranked.csv")
 dd[, crop_rank:= NULL]
 
-
-# Survey units ------------
-# calculate country total cropland area
+# calc country total cropland area ------------
 dc <- dd[, .(cropland_Mha = sum(area_ha, na.rm = TRUE)/1e6)
 				 , by = .(continent, region, country, area_code, iso3)
 ]
+
+# Survey units ------------
+# define survey units for google forms
 
 ## by UN region ---------
 dc[continent %in% c("Africa", "Europe", "Oceania"), survey_unit:= region]
@@ -142,6 +165,7 @@ dc[region == "South America" & is.na(survey_unit), survey_unit:= "Andean counrie
 
 
 ## by country  ------------
+# countries that will be surveyed individually
 ind_ctry <- c(
 	"IND", "CHN", "MEX", "PHL", "IDN", "AUS" 
 )
@@ -151,11 +175,12 @@ dc[iso3 %in% ind_ctry, survey_unit:= country]
 dc[is.na(survey_unit), survey_unit:= paste(region, "(others)")]
 
 ## extrapolated ------------
-# leave blank
+# countries without survey unit (blank - NA) will be extrapolated
+# islands
 dc[region %in% c("Caribbean", "Melanesia", "Polynesia", "Micronesia"), survey_unit:= NA]
 # north korea, guyana, suriname
 dc[iso3 %in% c("PRK", "GUY", "SUR"), survey_unit:= NA]
-# small country/islands/deserts with small crop area (less than 700k ha)
+# all countries with small crop area (less than 700k ha)
 dc[cropland_Mha < 0.7, survey_unit:= NA]
 
 dc[!is.na(survey_unit), uniqueN(survey_unit)]
@@ -163,35 +188,113 @@ dc[, .N, by = .(survey_unit)]
 setorder(dc, continent, region, country)
 
 ## save as excel ---------
+# sheet with country list
 dt1 <- dc[, .(continent, region, country, survey_unit, iso3, `cropland (Mha)` = round(cropland_Mha, 1))]
+# sheet with survey unit list
 dt2 <- dc[!is.na(survey_unit), .(countries = paste(country, collapse = ", ")), by = .(survey_unit)]
+# save excel
 dir.create("data/excel_files", F, T)
 writexl::write_xlsx(
 	list(country_list = dt1, survey_unit_list = dt2), 
-	path = "data/excel_files/survey_unit.xlsx"
+	path = "data/excel_files/survey_unit_countries.xlsx"
 )
 
 rm(dt1, dt2)
 
 # Crop per survey unit ------------------------
+# identify the most important crop per survey unit
+## calc totals and prop ----------
+# add crops to survy unites data
 dt <- dd[dc[!is.na(survey_unit)], on = .NATURAL]
+# total cropland area per survey unit
 dtt <- dt[, .(cropland_ha = sum(area_ha, na.rm = T)), by = .(survey_unit)]
+# total crop area per crop and survey unit
 dt <- dt[
 	, .(area_ha = sum(area_ha, na.rm = TRUE))
 	, by = .(survey_unit, crop_group, crop, crop_code)
 ]
+# add survey unit cropland totals
 dt <- dt[dtt, on = .(survey_unit)]
+# order data by survey unit and crop area 
 setorderv(dt, c("survey_unit", "area_ha"), order = c(1,-1), na.last = TRUE)
+# calc crop proportion in survey unit and cumulative proportion
 dt[, crop_prop:= area_ha/(cropland_ha)]
 dt[, crop_cum_prop:= cumsum(crop_prop), by = .(survey_unit)]
+# check that the maximum of the cumulative proportion is always 1
 dt[, max(crop_cum_prop), by = .(survey_unit)][, all.equal(V1, rep(1, .N))] |> 
 	stopifnot()
-dt[crop_cum_prop < 0.7,]
-
-dt1 <- dt[, head(.SD), by = .(survey_unit, crop_group)]
 
 
-# map --------------
+## select most important crops ------------
+# select crops to cover 70% of the cropland area
+rbind(
+	dt[crop_cum_prop < 0.7, ] ,
+	dt[crop_cum_prop > 0.7, .SD[1], by = .(survey_unit)]
+)[order(survey_unit)] -> ds
+
+## crops in survey? -------------
+# define whether they will be surveyed or can be inferred from other info
+ds[, survey_crop:= TRUE]
+
+### no tree crops, fruits and vegetables -------
+ds[crop_group %in% c("Tree Crops", "Fruit", "Vegetables"), survey_crop:= FALSE]
+
+# no "Other" or n.e.c crop
+ds[crop %like% "Other|n\\.e\\.c\\.", survey_crop:= FALSE]
+
+### similar crops  ----------
+# keep the most important (first appearence, since they are in order) from the following groups
+# summer C4 crops
+ds[crop %in% c("Maize (corn)", "Sorghum", "Millet")
+, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
+, by = .(survey_unit)
+]
+	
+# winter C3 crops 
+ds[crop %in% c("Wheat", "Barley")
+		, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
+		, by = .(survey_unit)
+]
+
+# root and tuber crops
+ds[crop_group == "Root and Tubers"
+		, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
+		, by = .(survey_unit)
+]
+
+# Fibre and Oil Crops
+ds[crop_group == "Fibre and Oil Crops"
+		, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
+		, by = .(survey_unit)
+]
+
+# Pulses
+ds[crop_group == "Pulses"
+		, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
+		, by = .(survey_unit)
+]
+
+# total number of crops to be survey by group
+ds[, sum(survey_crop), by = .(survey_unit)]
+
+## save as excel ---------
+# sheet with country list
+ds1 <- ds[, .(survey_unit, crop, crop_group, 
+							`area (%)` = round(crop_prop*100), 
+							`survey?` = ifelse(survey_crop, "yes", "no"))]
+# sheet with survey unit list
+dt2 <- ds[survey_crop == TRUE, .(crops = paste(crop, collapse = "; ")), by = .(survey_unit)]
+# save excel
+writexl::write_xlsx(
+	list(main_crops = ds1, short_list = dt2), 
+	path = "data/excel_files/survey_unit_crops.xlsx"
+)
+
+rm(ds1, ds2)
+
+
+
+# maps --------------
 w <- geodata::world(path = "data")
 w0 <- merge(w, dc, by.x = "GID_0", by.y = "iso3")
 w1 <- aggregate(w0, "survey_unit")
