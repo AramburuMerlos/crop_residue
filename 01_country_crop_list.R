@@ -54,6 +54,14 @@ dg[crop_group %in% c("Fibre Crops", "Oilcrops"), crop_group:= "Fibre and Oil Cro
 dg <- dg[, .(crop_group, crop = Item, cpc_code = `Item Code (CPC)`)] |>
 	unique()
 
+### Split Cereals ----------------------
+dg[crop_group == "Cereals"]
+dg[crop %in% c("Maize (corn)", "Millet", "Sorghum"), crop_group:= "Summer C4 Cereals"]
+dg[crop %in% c("Barley", "Rye", "Triticale", "Wheat"), crop_group:= "Winter Cereals"]
+dg[crop == "Rice", crop_group:= "Rice"]
+dg[crop_group == "Cereals", crop_group:= "Other Cereals"]
+
+
 ### Tee crops ---------------
 # let's define a tree crop category
 tree_crops <- c("Apples", "Apricots", "Avocados", "Cashewapple", "Cherries", "Dates", "Figs", 
@@ -160,6 +168,7 @@ dc[region %in% c("Western Asia", "Central Asia", "Central America"), survey_unit
 
 ## by custom regions ----------
 dc[iso3 %in% c("USA", "CAN"), survey_unit:= "USA - Canada"]
+dc[iso3 %in% c("AUS", "NZL"), survey_unit:= "Australia - New Zeland"]
 dc[iso3 %in% c("ARG", "BRA", "PRY", "URY"), survey_unit:= "Mercosur"]
 dc[region == "South America" & is.na(survey_unit), survey_unit:= "Andean counries"]
 
@@ -167,7 +176,7 @@ dc[region == "South America" & is.na(survey_unit), survey_unit:= "Andean counrie
 ## by country  ------------
 # countries that will be surveyed individually
 ind_ctry <- c(
-	"IND", "CHN", "MEX", "PHL", "IDN", "AUS" 
+	"IND", "CHN", "MEX", "PHL", "IDN"
 )
 dc[iso3 %in% ind_ctry, survey_unit:= country]
 
@@ -181,25 +190,12 @@ dc[region %in% c("Caribbean", "Melanesia", "Polynesia", "Micronesia"), survey_un
 # north korea, guyana, suriname
 dc[iso3 %in% c("PRK", "GUY", "SUR"), survey_unit:= NA]
 # all countries with small crop area (less than 700k ha)
-dc[cropland_Mha < 0.7, survey_unit:= NA]
+dc[cropland_Mha < 0.7 & iso3 != "NZL", survey_unit:= NA]
 
 dc[!is.na(survey_unit), uniqueN(survey_unit)]
 dc[, .N, by = .(survey_unit)]
 setorder(dc, continent, region, country)
 
-## save as excel ---------
-# sheet with country list
-dt1 <- dc[, .(continent, region, country, survey_unit, iso3, `cropland (Mha)` = round(cropland_Mha, 1))]
-# sheet with survey unit list
-dt2 <- dc[!is.na(survey_unit), .(countries = paste(country, collapse = ", ")), by = .(survey_unit)]
-# save excel
-dir.create("data/excel_files", F, T)
-writexl::write_xlsx(
-	list(country_list = dt1, survey_unit_list = dt2), 
-	path = "data/excel_files/survey_unit_countries.xlsx"
-)
-
-rm(dt1, dt2)
 
 # Crop per survey unit ------------------------
 # identify the most important crop per survey unit
@@ -245,15 +241,15 @@ ds[crop %like% "Other|n\\.e\\.c\\.", survey_crop:= FALSE]
 ### similar crops  ----------
 # keep the most important (first appearence, since they are in order) from the following groups
 # summer C4 crops
-ds[crop %in% c("Maize (corn)", "Sorghum", "Millet")
-, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
-, by = .(survey_unit)
+ds[crop_group == "Summer C4 Cereals"
+	 , survey_crop:= c(TRUE, rep(FALSE, .N - 1))
+	 , by = .(survey_unit)
 ]
 	
 # winter C3 crops 
-ds[crop %in% c("Wheat", "Barley")
-		, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
-		, by = .(survey_unit)
+ds[crop_group == "Winter Cereals"
+	 , survey_crop:= c(TRUE, rep(FALSE, .N - 1))
+	 , by = .(survey_unit)
 ]
 
 # root and tuber crops
@@ -277,17 +273,43 @@ ds[crop_group == "Pulses"
 # total number of crops to be survey by group
 ds[, sum(survey_crop), by = .(survey_unit)]
 
-## save as excel ---------
+## Modify names of crops in survey ----------
+ds[, crop_sname:= tolower(crop)]
+ds[, crop_sname:= str_remove_all(crop_sname, " ?seed ?")]
+ds[crop_group == "Summer C4 Cereals", unique(crop)]
+ds[crop_group == "Summer C4 Cereals", crop_sname:= "maize/corn, sorghum, millet"]
+ds[crop_group == "Winter Cereals", unique(crop)]
+ds[crop_group == "Winter Cereals", crop_sname:= "wheat, barley"]
+ds[crop_group == "Pulses", unique(crop)]
+ds[crop_group == "Pulses", crop_sname:= "pulses (beans, cowpeas, chickpeas, etc)"]
+ds[crop_group == "Root and Tubers", unique(crop)]
+ds[crop_group == "Root and Tubers", crop_sname:= "root and tubers (cassava, potatoes, yams, etc)"]
+ds[crop_sname == "soya beans", crop_sname:= "soya bean/soybean"]
+ds[crop_sname == "rape or colza", crop_sname:= "rapeseed/colza/mustard"]
+ds[crop_sname == "cotton, unginned", crop_sname:= "cotton"]
+ds[crop_sname == "groundnuts, excluding shelled", crop_sname:= "groundnut/peanut"]
+
+ds[survey_crop == TRUE, unique(crop_sname)]
+
+# Save as excel ---------
 # sheet with country list
-ds1 <- ds[, .(survey_unit, crop, crop_group, 
+dc1 <- dc[, .(continent, region, country, survey_unit, iso3, `cropland (Mha)` = round(cropland_Mha, 1))]
+
+# sheet with crop list
+ds1 <- ds[, .(survey_unit, crop, crop_sname, crop_group, 
 							`area (%)` = round(crop_prop*100), 
 							`survey?` = ifelse(survey_crop, "yes", "no"))]
-# sheet with survey unit list
-dt2 <- ds[survey_crop == TRUE, .(crops = paste(crop, collapse = "; ")), by = .(survey_unit)]
+
+# crop and country by sampling unit list
+dc2 <- dc[!is.na(survey_unit), .(countries = paste(country, collapse = ", ")), by = .(survey_unit)]
+ds2 <- ds[survey_crop == TRUE, .(crops = paste(crop_sname, collapse = "; ")), by = .(survey_unit)]
+
+dcs <- dc2[ds2, on = .(survey_unit)]
+
 # save excel
 writexl::write_xlsx(
-	list(main_crops = ds1, short_list = dt2), 
-	path = "data/excel_files/survey_unit_crops.xlsx"
+	list(summary = dcs, country_list = dc1, crop_list = ds1), 
+	path = "data/excel_files/survey_unit_countries_and_crop_lists.xlsx"
 )
 
 rm(ds1, ds2)
