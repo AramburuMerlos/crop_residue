@@ -47,20 +47,19 @@ lg <- lapply(fn, fread)
 names(lg) <- basename(fn) |> str_remove(".csv")
 dg <- rbindlist(lg, id = "crop_group")
 
-### combine Fibre and Oil crops ---------
-dg[crop_group %in% c("Fibre Crops", "Oilcrops"), crop_group:= "Fibre and Oil Crops"]
-
 # keep group, name and code only
 dg <- dg[, .(crop_group, crop = Item, cpc_code = `Item Code (CPC)`)] |>
 	unique()
 
+# remove cotton from oil crops
+dg <- dg[!(crop_group == "Oilcrops" & crop == "Seed cotton, unginned")]
+
 ### Split Cereals ----------------------
 dg[crop_group == "Cereals"]
-dg[crop %in% c("Maize (corn)", "Millet", "Sorghum"), crop_group:= "Summer C4 Cereals"]
-dg[crop %in% c("Barley", "Rye", "Triticale", "Wheat"), crop_group:= "Winter Cereals"]
+dg[crop %in% c("Maize (corn)", "Millet", "Sorghum"), crop_group:= "Coarse cereal grains"]
+dg[crop %in% c("Barley", "Rye", "Triticale", "Wheat", "Oats"), crop_group:= "Winter Cereals"]
 dg[crop == "Rice", crop_group:= "Rice"]
 dg[crop_group == "Cereals", crop_group:= "Other Cereals"]
-
 
 ### Tee crops ---------------
 # let's define a tree crop category
@@ -190,7 +189,7 @@ dc[region %in% c("Caribbean", "Melanesia", "Polynesia", "Micronesia"), survey_un
 # north korea, guyana, suriname
 dc[iso3 %in% c("PRK", "GUY", "SUR"), survey_unit:= NA]
 # all countries with small crop area (less than 700k ha)
-dc[cropland_Mha < 0.7 & iso3 != "NZL", survey_unit:= NA]
+dc[cropland_Mha < 0.4 & iso3 != "NZL", survey_unit:= NA]
 
 dc[!is.na(survey_unit), uniqueN(survey_unit)]
 dc[, .N, by = .(survey_unit)]
@@ -222,11 +221,23 @@ dt[, max(crop_cum_prop), by = .(survey_unit)][, all.equal(V1, rep(1, .N))] |>
 
 
 ## select most important crops ------------
-# select crops to cover 70% of the cropland area
+# select crops to cover 75% of the cropland area
 rbind(
-	dt[crop_cum_prop < 0.7, ] ,
-	dt[crop_cum_prop > 0.7, .SD[1], by = .(survey_unit)]
-)[order(survey_unit)] -> ds
+	dt[crop_cum_prop < 0.75, ] ,
+	dt[crop_cum_prop > 0.75, .SD[1], by = .(survey_unit)]
+)[order(survey_unit)] |>
+	unique() -> ds
+
+# if the most important crop in a group not yet included covers > 1%, include it
+rbind(
+	ds, 
+	dt[!ds, on = .(survey_unit, crop_group)][
+		crop_prop > 0.011, .SD[1], by = .(survey_unit, crop_group)
+	]			
+) -> ds
+
+
+setorderv(ds, c("survey_unit", "crop_prop"), order = c(1,-1))
 
 ## crops in survey? -------------
 # define whether they will be surveyed or can be inferred from other info
@@ -240,8 +251,8 @@ ds[crop %like% "Other|n\\.e\\.c\\.", survey_crop:= FALSE]
 
 ### similar crops  ----------
 # keep the most important (first appearence, since they are in order) from the following groups
-# summer C4 crops
-ds[crop_group == "Summer C4 Cereals"
+# Coarse cereal grains
+ds[crop_group == "Coarse cereal grains"
 	 , survey_crop:= c(TRUE, rep(FALSE, .N - 1))
 	 , by = .(survey_unit)
 ]
@@ -258,8 +269,8 @@ ds[crop_group == "Root and Tubers"
 		, by = .(survey_unit)
 ]
 
-# Fibre and Oil Crops
-ds[crop_group == "Fibre and Oil Crops"
+# Fibre
+ds[crop_group == "Fibre Crops"
 		, survey_crop:= c(TRUE, rep(FALSE, .N - 1))
 		, by = .(survey_unit)
 ]
@@ -270,14 +281,20 @@ ds[crop_group == "Pulses"
 		, by = .(survey_unit)
 ]
 
+# Oil crops
+# only remove when one is present and the second one is less than 3%
+ds[crop_group == "Oilcrops", 
+	 survey_crop:= ifelse(crop_prop > 0.03 | c(TRUE, rep(FALSE, .N-1)), TRUE, FALSE)]
+
+
 # total number of crops to be survey by group
 ds[, sum(survey_crop), by = .(survey_unit)]
 
 ## Modify names of crops in survey ----------
 ds[, crop_sname:= tolower(crop)]
-ds[, crop_sname:= str_remove_all(crop_sname, " ?seed ?")]
-ds[crop_group == "Summer C4 Cereals", unique(crop)]
-ds[crop_group == "Summer C4 Cereals", crop_sname:= "maize/corn, sorghum, millet"]
+ds[, crop_sname:= str_remove_all(crop_sname, "(?<!lin) ?seed ?")]
+ds[crop_group == "Coarse cereal grains", unique(crop)]
+ds[crop_group == "Coarse cereal grains", crop_sname:= "maize/corn, sorghum, millet"]
 ds[crop_group == "Winter Cereals", unique(crop)]
 ds[crop_group == "Winter Cereals", crop_sname:= "wheat, barley"]
 ds[crop_group == "Pulses", unique(crop)]
