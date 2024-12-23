@@ -161,9 +161,6 @@ dc <- dd[, .(cropland_Mha = sum(area_ha, na.rm = TRUE)/1e6)
 # Survey units ------------
 # define survey units for google forms
 
-## by UN region ---------
-dc[continent %in% c("Africa", "Europe", "Oceania"), survey_unit:= region]
-dc[region %in% c("Western Asia", "Central Asia", "Central America"), survey_unit:= region]
 
 ## by custom regions ----------
 dc[iso3 %in% c("USA", "CAN"), survey_unit:= "USA - Canada"]
@@ -173,21 +170,21 @@ dc[region == "South America" & is.na(survey_unit), survey_unit:= "Andean counrie
 
 
 ## by country  ------------
-# countries that will be surveyed individually
-ind_ctry <- c(
-	"IND", "CHN", "MEX", "PHL", "IDN"
-)
-dc[iso3 %in% ind_ctry, survey_unit:= country]
+# China is the only country that will be surveyed individually
+dc[iso3 == "CHN", survey_unit:= country]
+# all other countries in E Asia go together
+dc[region == "Eastern Asia" & is.na(survey_unit), survey_unit:= "Eastern Asia (others)"]
 
-## by region minus important country -----------
-dc[is.na(survey_unit), survey_unit:= paste(region, "(others)")]
+## by region -----------
+# all others go by region
+dc[is.na(survey_unit), survey_unit:= region]
 
 ## extrapolated ------------
 # countries without survey unit (blank - NA) will be extrapolated
 # islands
 dc[region %in% c("Caribbean", "Melanesia", "Polynesia", "Micronesia"), survey_unit:= NA]
-# north korea, guyana, suriname
-dc[iso3 %in% c("PRK", "GUY", "SUR"), survey_unit:= NA]
+# north korea, guyana, suriname, Taiwan
+dc[iso3 %in% c("PRK", "GUY", "SUR", "TWN"), survey_unit:= NA]
 # all countries with small crop area (less than 700k ha)
 dc[cropland_Mha < 0.4 & iso3 != "NZL", survey_unit:= NA]
 
