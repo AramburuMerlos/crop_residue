@@ -56,8 +56,8 @@ dg <- dg[!(crop_group == "Oilcrops" & crop == "Seed cotton, unginned")]
 
 ### Split Cereals ----------------------
 dg[crop_group == "Cereals"]
-dg[crop %in% c("Maize (corn)", "Millet", "Sorghum"), crop_group:= "Coarse cereal grains"]
-dg[crop %in% c("Barley", "Rye", "Triticale", "Wheat", "Oats"), crop_group:= "Winter Cereals"]
+dg[crop %in% c("Maize (corn)", "Millet", "Sorghum"), crop_group:= "Coarse grains"]
+dg[crop %in% c("Barley", "Rye", "Triticale", "Wheat", "Oats"), crop_group:= "Small grains"]
 dg[crop == "Rice", crop_group:= "Rice"]
 dg[crop_group == "Cereals", crop_group:= "Other Cereals"]
 
@@ -249,13 +249,13 @@ ds[crop %like% "Other|n\\.e\\.c\\.", survey_crop:= FALSE]
 ### similar crops  ----------
 # keep the most important (first appearence, since they are in order) from the following groups
 # Coarse cereal grains
-ds[crop_group == "Coarse cereal grains"
+ds[crop_group == "Coarse grains"
 	 , survey_crop:= c(TRUE, rep(FALSE, .N - 1))
 	 , by = .(survey_unit)
 ]
 	
 # winter C3 crops 
-ds[crop_group == "Winter Cereals"
+ds[crop_group == "Small grains"
 	 , survey_crop:= c(TRUE, rep(FALSE, .N - 1))
 	 , by = .(survey_unit)
 ]
@@ -290,10 +290,10 @@ ds[, sum(survey_crop), by = .(survey_unit)]
 ## Modify names of crops in survey ----------
 ds[, crop_sname:= tolower(crop)]
 ds[, crop_sname:= str_remove_all(crop_sname, "(?<!lin) ?seed ?")]
-ds[crop_group == "Coarse cereal grains", unique(crop)]
-ds[crop_group == "Coarse cereal grains", crop_sname:= "maize/corn, sorghum, millet"]
-ds[crop_group == "Winter Cereals", unique(crop)]
-ds[crop_group == "Winter Cereals", crop_sname:= "wheat, barley"]
+ds[crop_group == "Coarse grains", unique(crop)]
+ds[crop_group == "Coarse grains", crop_sname:= "coarse grains (maize/corn, sorghum, millet)"]
+ds[crop_group == "Small grains", unique(crop)]
+ds[crop_group == "Small grains", crop_sname:= "small grains (wheat, barley, teff)"]
 ds[crop_group == "Pulses", unique(crop)]
 ds[crop_group == "Pulses", crop_sname:= "pulses (beans, cowpeas, chickpeas, etc)"]
 ds[crop_group == "Root and Tubers", unique(crop)]
@@ -306,8 +306,15 @@ ds[crop_sname == "groundnuts, excluding shelled", crop_sname:= "groundnut/peanut
 ds[survey_crop == TRUE, unique(crop_sname)]
 
 # Save as excel ---------
-# sheet with country list
-dc1 <- dc[, .(continent, region, country, survey_unit, iso3, `cropland (Mha)` = round(cropland_Mha, 1))]
+## sheet with country/subregion list ---------
+dc1 <- dc[, .(continent, region, country, survey_unit, iso3)]
+
+## Add country subregions -------------------------------
+sub_regions <- fread("data/subregions/subregions.csv")
+setnames(sub_regions, "Region", "subregion")
+dc1 <- merge(dc1, sub_regions, by.x = "iso3", by.y = "GID_0", all.x = T)
+setcolorder(dc1, c("continent", "region", "iso3",  "country", "subregion", "survey_unit"))
+dc1[country == "Thailand" & subregion == "South", survey_unit:= NA]
 
 # sheet with crop list
 ds1 <- ds[, .(survey_unit, crop, crop_sname, crop_group, 
