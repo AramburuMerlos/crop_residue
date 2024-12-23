@@ -343,9 +343,7 @@ w0 <- merge(w, dc, by.x = "GID_0", by.y = "iso3")
 w1 <- aggregate(w0, "survey_unit")
 w1 <- w1[order(w1$continent)]
 
-set.seed(10)
-colors <- paletteer::paletteer_d("ggthemes::Tableau_20", 20) |>
-	c("red", "blue", "green", "yellow") |> sample()
+colors <- paletteer::paletteer_d("ggthemes::Tableau_20", 20) 
 dir.create("maps", F)
 
 png("maps/survey_units.png", width = 7, height = 5, res = 300, units = "in")
